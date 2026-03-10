@@ -14,16 +14,20 @@ import (
 )
 
 type Config struct {
-	Port         string
-	ResendAPIKey string
-	FromAddress  string
+	Port           string
+	ResendAPIKey   string
+	FromAddress    string
+	ContactTo      string
+	AllowedOrigins string
 }
 
 func loadConfig() Config {
 	return Config{
-		Port:         getEnv("PORT", "8080"),
-		ResendAPIKey: getEnv("RESEND_API_KEY", ""),
-		FromAddress:  getEnv("FROM_ADDRESS", "Compumed <noreply@compumed.com>"),
+		Port:           getEnv("PORT", "8080"),
+		ResendAPIKey:   getEnv("RESEND_API_KEY", ""),
+		FromAddress:    getEnv("FROM_ADDRESS", "Compumed <onboarding@resend.dev>"),
+		ContactTo:      getEnv("CONTACT_TO", "nate.ashby11@gmail.com"),
+		AllowedOrigins: getEnv("ALLOWED_ORIGINS", "*"),
 	}
 }
 
@@ -50,7 +54,7 @@ func main() {
 	slog.Info("Starting Compumed Notifications Service")
 
 	emailClient := email.NewClient(cfg.ResendAPIKey, cfg.FromAddress)
-	server := api.NewServer(":"+cfg.Port, emailClient)
+	server := api.NewServer(":"+cfg.Port, emailClient, cfg.ContactTo, cfg.AllowedOrigins)
 
 	// Graceful shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
