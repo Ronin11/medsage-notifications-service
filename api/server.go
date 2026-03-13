@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	"compumed/notifications-service/email"
+	"medsage/notifications-service/email"
 )
 
 type Server struct {
@@ -96,7 +96,7 @@ func (s *Server) handleContact(w http.ResponseWriter, r *http.Request) {
 		subjectLabel = "General Inquiry"
 	}
 
-	emailSubject := fmt.Sprintf("[Compumed Contact] %s from %s", subjectLabel, req.Name)
+	emailSubject := fmt.Sprintf("[Medsage Contact] %s from %s", subjectLabel, req.Name)
 
 	escapedName := html.EscapeString(req.Name)
 	escapedEmail := html.EscapeString(req.Email)

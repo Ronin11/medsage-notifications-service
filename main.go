@@ -9,8 +9,9 @@ import (
 	"syscall"
 	"time"
 
-	"compumed/notifications-service/api"
-	"compumed/notifications-service/email"
+	"medsage/notifications-service/api"
+	"medsage/notifications-service/email"
+	natsbus "medsage/notifications-service/nats"
 )
 
 type Config struct {
@@ -19,15 +20,17 @@ type Config struct {
 	FromAddress    string
 	ContactTo      string
 	AllowedOrigins string
+	NATSURL        string
 }
 
 func loadConfig() Config {
 	return Config{
 		Port:           getEnv("PORT", "8080"),
 		ResendAPIKey:   getEnv("RESEND_API_KEY", ""),
-		FromAddress:    getEnv("FROM_ADDRESS", "Compumed <onboarding@resend.dev>"),
+		FromAddress:    getEnv("FROM_ADDRESS", "Medsage <onboarding@resend.dev>"),
 		ContactTo:      getEnv("CONTACT_TO", "nate.ashby11@gmail.com"),
 		AllowedOrigins: getEnv("ALLOWED_ORIGINS", "*"),
+		NATSURL:        getEnv("NATS_URL", "nats://nats:4222"),
 	}
 }
 
@@ -51,10 +54,31 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.Info("Starting Compumed Notifications Service")
+	slog.Info("Starting Medsage Notifications Service")
 
 	emailClient := email.NewClient(cfg.ResendAPIKey, cfg.FromAddress)
 	server := api.NewServer(":"+cfg.Port, emailClient, cfg.ContactTo, cfg.AllowedOrigins)
+
+	// Connect to NATS for event-driven notifications
+	subscriber, err := natsbus.Connect(cfg.NATSURL, []string{
+		"medsage.events.medication.>",
+		"medsage.events.alerts",
+		"medsage.events.bug.report",
+	})
+	if err != nil {
+		slog.Error("Failed to connect to NATS", "error", err)
+		os.Exit(1)
+	}
+	defer subscriber.Close()
+
+	notifier := NewEventNotifier(emailClient, cfg.ContactTo)
+
+	// Start NATS consumer in background
+	go func() {
+		if err := subscriber.Start(notifier.Handle); err != nil {
+			slog.Error("NATS subscriber error", "error", err)
+		}
+	}()
 
 	// Graceful shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -69,6 +93,8 @@ func main() {
 
 	<-ctx.Done()
 	slog.Info("Shutting down...")
+
+	subscriber.Close()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
