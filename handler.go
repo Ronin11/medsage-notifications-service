@@ -10,35 +10,125 @@ import (
 	eventsv1 "medsage/proto/medsage/events/v1"
 
 	"medsage/notifications-service/email"
+	"medsage/notifications-service/push"
 )
 
-// EventNotifier handles NATS events and sends email notifications.
+// EventNotifier handles NATS events and sends email + push notifications.
 type EventNotifier struct {
 	emailClient *email.Client
+	tokenStore  *push.TokenStore
+	fcmClient   *push.FCMClient
 	alertTo     string // recipient for device alerts / medication events
 }
 
-func NewEventNotifier(emailClient *email.Client, alertTo string) *EventNotifier {
-	return &EventNotifier{emailClient: emailClient, alertTo: alertTo}
+func NewEventNotifier(emailClient *email.Client, tokenStore *push.TokenStore, fcmClient *push.FCMClient, alertTo string) *EventNotifier {
+	return &EventNotifier{emailClient: emailClient, tokenStore: tokenStore, fcmClient: fcmClient, alertTo: alertTo}
 }
 
-// Handle processes a protobuf DeviceEvent and sends the appropriate notification email.
+// Handle processes a protobuf DeviceEvent: tries push first, falls back to email.
 func (n *EventNotifier) Handle(ctx context.Context, evt *eventsv1.DeviceEvent) error {
+	if evt.Metadata["test"] == "true" {
+		slog.Info("Skipping notification for test event",
+			"event_id", evt.EventId,
+			"device_id", evt.DeviceId,
+			"type", evt.EventType.String(),
+		)
+		return nil
+	}
+
+	var title, body string
+	var emailSender func(context.Context, *eventsv1.DeviceEvent) error
+
 	switch evt.EventType {
 	case eventsv1.EventType_EVENT_TYPE_MEDICATION_DISPENSED:
-		return n.sendMedicationDispensed(ctx, evt)
+		title = "Medication Dispensed"
+		body = fmt.Sprintf("Device %s dispensed medication at %s", shortID(evt.DeviceId), formatTimestamp(evt.TimestampUnix))
+		emailSender = n.sendMedicationDispensed
 	case eventsv1.EventType_EVENT_TYPE_MEDICATION_MISSED:
-		return n.sendMedicationMissed(ctx, evt)
+		title = "Medication Missed"
+		body = fmt.Sprintf("Device %s: patient missed their scheduled medication", shortID(evt.DeviceId))
+		emailSender = n.sendMedicationMissed
 	case eventsv1.EventType_EVENT_TYPE_MEDICATION_CONFIRMED:
-		return n.sendMedicationConfirmed(ctx, evt)
+		title = "Medication Confirmed"
+		body = fmt.Sprintf("Device %s: patient confirmed taking medication", shortID(evt.DeviceId))
+		emailSender = n.sendMedicationConfirmed
 	case eventsv1.EventType_EVENT_TYPE_ALARM_TRIGGERED:
-		return n.sendAlarmTriggered(ctx, evt)
+		title = "Alarm Triggered"
+		p := evt.GetAlarmTriggered()
+		if p != nil {
+			body = fmt.Sprintf("Device %s: alarm triggered at %02d:%02d", shortID(evt.DeviceId), p.Hour, p.Minute)
+		} else {
+			body = fmt.Sprintf("Device %s: alarm triggered", shortID(evt.DeviceId))
+		}
+		emailSender = n.sendAlarmTriggered
 	case eventsv1.EventType_EVENT_TYPE_BUG_REPORT:
-		return n.sendBugReport(ctx, evt)
+		title = "Bug Report"
+		body = fmt.Sprintf("Device %s submitted a bug report", shortID(evt.DeviceId))
+		emailSender = n.sendBugReport
 	default:
 		slog.Debug("Ignoring unhandled event type", "type", evt.EventType.String())
 		return nil
 	}
+
+	// Try push first; fall back to email if push didn't reach anyone
+	if pushed := n.sendPush(ctx, evt.DeviceId, title, body); !pushed {
+		slog.Info("Push notification not delivered, falling back to email", "title", title)
+		if err := emailSender(ctx, evt); err != nil {
+			slog.Error("Email fallback failed", "error", err)
+		}
+	}
+
+	return nil
+}
+
+// sendPush sends push notifications via Expo and FCM.
+// Returns true if at least one push notification was delivered successfully.
+func (n *EventNotifier) sendPush(ctx context.Context, deviceID, title, body string) bool {
+	if n.tokenStore == nil {
+		return false
+	}
+
+	delivered := false
+	data := map[string]string{"deviceId": deviceID}
+
+	// Send via Expo
+	expoTokens, err := n.tokenStore.GetTokensForDevice(ctx, deviceID)
+	if err != nil {
+		slog.Error("Failed to get Expo push tokens", "error", err)
+	} else if len(expoTokens) > 0 {
+		messages := make([]push.Message, len(expoTokens))
+		for i, token := range expoTokens {
+			messages[i] = push.Message{
+				To:    token,
+				Title: title,
+				Body:  body,
+				Sound: "default",
+				Data:  data,
+			}
+		}
+		if err := push.Send(ctx, messages); err != nil {
+			slog.Error("Failed to send Expo push notifications", "error", err)
+		} else {
+			slog.Info("Expo push notifications sent", "count", len(expoTokens), "title", title)
+			delivered = true
+		}
+	}
+
+	// Send via FCM
+	if n.fcmClient != nil {
+		fcmTokens, err := n.tokenStore.GetFCMTokensForDevice(ctx, deviceID)
+		if err != nil {
+			slog.Error("Failed to get FCM tokens", "error", err)
+		} else if len(fcmTokens) > 0 {
+			if err := n.fcmClient.Send(ctx, fcmTokens, title, body, data); err != nil {
+				slog.Error("Failed to send FCM notifications", "error", err)
+			} else {
+				delivered = true
+			}
+		}
+	}
+
+	return delivered
 }
 
 func (n *EventNotifier) sendMedicationDispensed(ctx context.Context, evt *eventsv1.DeviceEvent) error {

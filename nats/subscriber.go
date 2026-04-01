@@ -52,6 +52,16 @@ func Connect(url string, subjects []string) (*Subscriber, error) {
 		return nil, fmt.Errorf("jetstream init: %w", err)
 	}
 
+	// Ensure the EVENTS stream exists (create if missing).
+	_, err = js.CreateOrUpdateStream(context.Background(), jetstream.StreamConfig{
+		Name:     StreamName,
+		Subjects: []string{"medsage.events.>"},
+	})
+	if err != nil {
+		nc.Close()
+		return nil, fmt.Errorf("jetstream create stream: %w", err)
+	}
+
 	// Create a durable consumer that filters to the subjects we care about.
 	consumer, err := js.CreateOrUpdateConsumer(context.Background(), StreamName, jetstream.ConsumerConfig{
 		Name:           ConsumerName,

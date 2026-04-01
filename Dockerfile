@@ -1,9 +1,10 @@
-FROM golang:1.24-alpine AS builder
+FROM golang:1.26-alpine AS builder
 RUN apk add --no-cache git
 WORKDIR /app
-COPY go.mod go.sum* ./
+COPY proto/gen/go/ /proto/gen/go/
+COPY notifications-service/go.mod notifications-service/go.sum* ./
 RUN go mod download
-COPY . .
+COPY notifications-service/ .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /notifications-service .
 
 FROM alpine:3.19
