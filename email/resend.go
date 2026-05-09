@@ -21,10 +21,17 @@ func NewClient(apiKey, fromAddr string) *Client {
 }
 
 type SendRequest struct {
-	To      []string `json:"to"`
-	Subject string   `json:"subject"`
-	HTML    string   `json:"html"`
-	Text    string   `json:"text"`
+	To          []string     `json:"to"`
+	Subject     string       `json:"subject"`
+	HTML        string       `json:"html"`
+	Text        string       `json:"text"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+}
+
+type Attachment struct {
+	Filename    string
+	ContentType string
+	Content     []byte
 }
 
 type SendResponse struct {
@@ -32,12 +39,22 @@ type SendResponse struct {
 }
 
 func (c *Client) Send(ctx context.Context, req SendRequest) (*SendResponse, error) {
+	var attachments []*resend.Attachment
+	for _, a := range req.Attachments {
+		attachments = append(attachments, &resend.Attachment{
+			Filename:    a.Filename,
+			ContentType: a.ContentType,
+			Content:     a.Content,
+		})
+	}
+
 	params := &resend.SendEmailRequest{
-		From:    c.fromAddr,
-		To:      req.To,
-		Subject: req.Subject,
-		Html:    req.HTML,
-		Text:    req.Text,
+		From:        c.fromAddr,
+		To:          req.To,
+		Subject:     req.Subject,
+		Html:        req.HTML,
+		Text:        req.Text,
+		Attachments: attachments,
 	}
 
 	sent, err := c.resend.Emails.SendWithContext(ctx, params)

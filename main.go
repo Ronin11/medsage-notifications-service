@@ -148,6 +148,37 @@ func main() {
 		}
 	}()
 
+	// Commands subscriber — handles SendEmail (and future) command messages.
+	cmdHandler := NewCommandHandler(emailClient)
+	go func() {
+		for {
+			subscriber, err := natsbus.ConnectCommands(cfg.NATSURL)
+			if err != nil {
+				slog.Warn("NATS commands not available, retrying in 5s", "error", err)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(5 * time.Second):
+					continue
+				}
+			}
+
+			slog.Info("NATS commands consumer started")
+			if err := subscriber.Start(cmdHandler.HandleSendEmail); err != nil {
+				slog.Error("NATS commands subscriber error", "error", err)
+			}
+			subscriber.Close()
+
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				slog.Warn("NATS commands subscriber stopped, reconnecting in 5s")
+				time.Sleep(5 * time.Second)
+			}
+		}
+	}()
+
 	<-ctx.Done()
 	slog.Info("Shutting down...")
 
