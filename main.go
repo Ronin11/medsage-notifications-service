@@ -23,6 +23,7 @@ type Config struct {
 	ResendAPIKey        string
 	FromAddress         string
 	ContactTo           string
+	AlertTo             string
 	AllowedOrigins      string
 	NATSURL             string
 	DatabaseURL         string
@@ -31,10 +32,19 @@ type Config struct {
 
 func loadConfig() Config {
 	return Config{
-		Port:                getEnv("PORT", "8080"),
-		ResendAPIKey:        getEnv("RESEND_API_KEY", ""),
-		FromAddress:         getEnv("FROM_ADDRESS", "Medsage <onboarding@resend.dev>"),
-		ContactTo:           getEnv("CONTACT_TO", "nate.ashby11@gmail.com"),
+		Port:         getEnv("PORT", "8080"),
+		ResendAPIKey: getEnv("RESEND_API_KEY", ""),
+		FromAddress:  getEnv("FROM_ADDRESS", "Medsage <onboarding@resend.dev>"),
+		// No default: this is where the site's contact form lands, and a
+		// hardcoded personal address here also became the destination for every
+		// patient's medication alerts.
+		ContactTo: getEnv("CONTACT_TO", ""),
+		// Optional, and empty on purpose. Patient events are addressed via push
+		// tokens scoped to the device's owner and caretakers; this is only a
+		// single-tenant escape hatch for a bench or demo rig. Setting it in a
+		// deployment with more than one patient sends everyone's medication
+		// events to one inbox.
+		AlertTo:             getEnv("ALERT_TO", ""),
 		AllowedOrigins:      getEnv("ALLOWED_ORIGINS", "*"),
 		NATSURL:             getEnv("NATS_URL", "nats://nats:4222"),
 		DatabaseURL:         getEnv("DATABASE_URL", ""),
@@ -60,6 +70,16 @@ func main() {
 	if cfg.ResendAPIKey == "" {
 		slog.Error("RESEND_API_KEY is required")
 		os.Exit(1)
+	}
+	if cfg.ContactTo == "" {
+		slog.Error("CONTACT_TO is required (destination for the site contact form and device bug reports)")
+		os.Exit(1)
+	}
+	if cfg.AlertTo != "" {
+		slog.Warn("ALERT_TO is set: undelivered patient events will be emailed to this single address. "+
+			"Safe only for a single-patient bench or demo rig — in a multi-patient deployment it sends "+
+			"every patient's medication events to one inbox.",
+			"alert_to", cfg.AlertTo)
 	}
 
 	slog.Info("Starting Medsage Notifications Service")
@@ -116,7 +136,7 @@ func main() {
 		"medsage.events.alerts",
 		"medsage.events.bug.report",
 	}
-	notifier := NewEventNotifier(emailClient, tokenStore, fcmClient, cfg.ContactTo)
+	notifier := NewEventNotifier(emailClient, tokenStore, fcmClient, cfg.AlertTo, cfg.ContactTo)
 
 	go func() {
 		for {

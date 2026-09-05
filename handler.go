@@ -14,15 +14,51 @@ import (
 )
 
 // EventNotifier handles NATS events and sends email + push notifications.
-type EventNotifier struct {
-	emailClient *email.Client
-	tokenStore  *push.TokenStore
-	fcmClient   *push.FCMClient
-	alertTo     string // recipient for device alerts / medication events
+//
+// Two recipients, deliberately kept apart:
+//
+//   - alertTo carries PHI (which patient's device, which dose, when). It is
+//     resolved per device via push tokens; the email address here is only a
+//     single-tenant escape hatch and is empty unless ALERT_TO is set. When it
+//     is empty and push reaches nobody, the event is logged as undelivered.
+//     Both used to point at the same hardcoded personal inbox, so every
+//     patient's medication events went to one person regardless of who was
+//     actually caring for them.
+//   - opsTo receives device diagnostics (bug reports), which the patient
+//     submits expecting the vendor to read them. Not a substitute for alertTo.
+//
+// mailer is the slice of email.Client this notifier uses, as an interface so
+// that recipient routing — the thing that leaked PHI — can be tested without a
+// network client. *email.Client satisfies it.
+type mailer interface {
+	Send(ctx context.Context, req email.SendRequest) (*email.SendResponse, error)
 }
 
-func NewEventNotifier(emailClient *email.Client, tokenStore *push.TokenStore, fcmClient *push.FCMClient, alertTo string) *EventNotifier {
-	return &EventNotifier{emailClient: emailClient, tokenStore: tokenStore, fcmClient: fcmClient, alertTo: alertTo}
+type EventNotifier struct {
+	emailClient mailer
+	tokenStore  *push.TokenStore
+	fcmClient   *push.FCMClient
+	alertTo     string // optional single-tenant fallback for patient events
+	opsTo       string // vendor inbox for device diagnostics
+}
+
+func NewEventNotifier(emailClient mailer, tokenStore *push.TokenStore, fcmClient *push.FCMClient, alertTo, opsTo string) *EventNotifier {
+	return &EventNotifier{
+		emailClient: emailClient,
+		tokenStore:  tokenStore,
+		fcmClient:   fcmClient,
+		alertTo:     alertTo,
+		opsTo:       opsTo,
+	}
+}
+
+// emailRecipient returns the address an undelivered event may fall back to, or
+// "" when there is nobody safe to send it to.
+func (n *EventNotifier) emailRecipient(t eventsv1.EventType) string {
+	if t == eventsv1.EventType_EVENT_TYPE_BUG_REPORT {
+		return n.opsTo
+	}
+	return n.alertTo
 }
 
 // Handle processes a protobuf DeviceEvent: tries push first, falls back to email.
@@ -37,7 +73,7 @@ func (n *EventNotifier) Handle(ctx context.Context, evt *eventsv1.DeviceEvent) e
 	}
 
 	var title, body string
-	var emailSender func(context.Context, *eventsv1.DeviceEvent) error
+	var emailSender func(context.Context, string, *eventsv1.DeviceEvent) error
 
 	switch evt.EventType {
 	case eventsv1.EventType_EVENT_TYPE_MEDICATION_DISPENSED:
@@ -70,10 +106,23 @@ func (n *EventNotifier) Handle(ctx context.Context, evt *eventsv1.DeviceEvent) e
 		return nil
 	}
 
-	// Try push first; fall back to email if push didn't reach anyone
+	// Push first, addressed to the device's owner and caretakers.
 	if pushed := n.sendPush(ctx, evt.DeviceId, title, body); !pushed {
+		to := n.emailRecipient(evt.EventType)
+		if to == "" {
+			// Nobody is registered for this device and no fallback address is
+			// configured. Dropping it is the correct outcome: the alternative
+			// is mailing one patient's medication history to whoever happens
+			// to be in an env var.
+			slog.Warn("Notification not delivered: no push recipients for device and no email fallback configured",
+				"event_id", evt.EventId,
+				"device_id", evt.DeviceId,
+				"type", evt.EventType.String(),
+			)
+			return nil
+		}
 		slog.Info("Push notification not delivered, falling back to email", "title", title)
-		if err := emailSender(ctx, evt); err != nil {
+		if err := emailSender(ctx, to, evt); err != nil {
 			slog.Error("Email fallback failed", "error", err)
 		}
 	}
@@ -131,7 +180,7 @@ func (n *EventNotifier) sendPush(ctx context.Context, deviceID, title, body stri
 	return delivered
 }
 
-func (n *EventNotifier) sendMedicationDispensed(ctx context.Context, evt *eventsv1.DeviceEvent) error {
+func (n *EventNotifier) sendMedicationDispensed(ctx context.Context, to string, evt *eventsv1.DeviceEvent) error {
 	subject := fmt.Sprintf("[Medsage] Medication Dispensed — Device %s", shortID(evt.DeviceId))
 	body := fmt.Sprintf(`<h2>Medication Dispensed</h2>
 <p><strong>Device:</strong> %s</p>
@@ -140,10 +189,10 @@ func (n *EventNotifier) sendMedicationDispensed(ctx context.Context, evt *events
 		formatTimestamp(evt.TimestampUnix),
 	)
 
-	return n.send(ctx, subject, body)
+	return n.send(ctx, to, subject, body)
 }
 
-func (n *EventNotifier) sendMedicationMissed(ctx context.Context, evt *eventsv1.DeviceEvent) error {
+func (n *EventNotifier) sendMedicationMissed(ctx context.Context, to string, evt *eventsv1.DeviceEvent) error {
 	p := evt.GetMedicationMissed()
 	detail := ""
 	if p != nil {
@@ -162,10 +211,10 @@ func (n *EventNotifier) sendMedicationMissed(ctx context.Context, evt *eventsv1.
 		detail,
 	)
 
-	return n.send(ctx, subject, body)
+	return n.send(ctx, to, subject, body)
 }
 
-func (n *EventNotifier) sendMedicationConfirmed(ctx context.Context, evt *eventsv1.DeviceEvent) error {
+func (n *EventNotifier) sendMedicationConfirmed(ctx context.Context, to string, evt *eventsv1.DeviceEvent) error {
 	p := evt.GetMedicationConfirmed()
 	detail := ""
 	if p != nil && p.DelaySecs > 0 {
@@ -183,10 +232,10 @@ func (n *EventNotifier) sendMedicationConfirmed(ctx context.Context, evt *events
 		detail,
 	)
 
-	return n.send(ctx, subject, body)
+	return n.send(ctx, to, subject, body)
 }
 
-func (n *EventNotifier) sendAlarmTriggered(ctx context.Context, evt *eventsv1.DeviceEvent) error {
+func (n *EventNotifier) sendAlarmTriggered(ctx context.Context, to string, evt *eventsv1.DeviceEvent) error {
 	p := evt.GetAlarmTriggered()
 	timeStr := ""
 	if p != nil {
@@ -203,10 +252,10 @@ func (n *EventNotifier) sendAlarmTriggered(ctx context.Context, evt *eventsv1.De
 		formatTimestamp(evt.TimestampUnix),
 	)
 
-	return n.send(ctx, subject, body)
+	return n.send(ctx, to, subject, body)
 }
 
-func (n *EventNotifier) sendBugReport(ctx context.Context, evt *eventsv1.DeviceEvent) error {
+func (n *EventNotifier) sendBugReport(ctx context.Context, to string, evt *eventsv1.DeviceEvent) error {
 	p := evt.GetBugReport()
 	detail := ""
 	if p != nil {
@@ -233,12 +282,15 @@ func (n *EventNotifier) sendBugReport(ctx context.Context, evt *eventsv1.DeviceE
 		detail,
 	)
 
-	return n.send(ctx, subject, body)
+	return n.send(ctx, to, subject, body)
 }
 
-func (n *EventNotifier) send(ctx context.Context, subject, htmlBody string) error {
+func (n *EventNotifier) send(ctx context.Context, to, subject, htmlBody string) error {
+	if to == "" {
+		return fmt.Errorf("refusing to send %q with no recipient", subject)
+	}
 	_, err := n.emailClient.Send(ctx, email.SendRequest{
-		To:      []string{n.alertTo},
+		To:      []string{to},
 		Subject: subject,
 		HTML:    htmlBody,
 	})
