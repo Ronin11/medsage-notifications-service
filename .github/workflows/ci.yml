@@ -1,9 +1,14 @@
 name: CI
 
 # This module builds standalone. It did not until 2026-09-05: it depended on
-# medsage/proto (and authkit) through `replace ../…`, so it could only be built
-# from inside the monorepo and had no CI at all. Those are published modules
-# now, which is what makes this workflow possible.
+# medsage/proto through `replace ../…`, so it could only be built from
+# inside the monorepo and had no CI at all. Those are published modules now,
+# which is what makes this workflow possible.
+#
+# They are private, so the module proxy and checksum database cannot serve them
+# and git needs a credential. Each module repo carries a read-only deploy key;
+# the private halves are the secrets used below. A deploy key's public half must
+# be unique across GitHub, so the two modules need separate keys.
 
 on:
   push:
@@ -14,8 +19,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      # The shared modules are private, so the proxy and checksum database
-      # cannot serve them, and git needs a credential to fetch them.
       GOPRIVATE: github.com/Ronin11/*
     steps:
       - uses: actions/checkout@v4
@@ -24,14 +27,25 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
       - name: Authenticate to private modules
-        # MODULES_TOKEN: a fine-grained PAT with read-only Contents access to
-        # medsage-proto and medsage-authkit. One token for both, rather than a
-        # deploy key per repository.
         env:
-          TOKEN: ${{ secrets.MODULES_TOKEN }}
+          PROTO_KEY: ${{ secrets.PROTO_DEPLOY_KEY }}
         run: |
-          test -n "$TOKEN" || { echo "MODULES_TOKEN secret is not set — see the repo's README"; exit 1; }
-          git config --global url."https://x-access-token:$TOKEN@github.com/".insteadOf "https://github.com/"
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          test -n "$PROTO_KEY" || { echo "proto_key secret is not set"; exit 1; }
+          printf '%s\n' "$PROTO_KEY" > ~/.ssh/proto_key
+          chmod 600 ~/.ssh/proto_key
+          # Host aliases rather than a single github.com entry: ssh must offer the
+          # right deploy key for the right repository, and GitHub rejects a key
+          # that does not belong to the repo being fetched.
+          cat >> ~/.ssh/config <<'SSHCFG'
+          Host proto.github.com
+            HostName github.com
+            User git
+            IdentityFile ~/.ssh/proto_key
+            IdentitiesOnly yes
+          SSHCFG
+          git config --global url."git@proto.github.com:Ronin11/medsage-proto".insteadOf "https://github.com/Ronin11/medsage-proto"
       - run: go build ./...
       - run: go vet ./...
       - run: go test ./...
