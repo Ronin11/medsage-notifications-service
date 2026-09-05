@@ -3,13 +3,14 @@ module medsage/notifications-service
 go 1.26.1
 
 require (
+	firebase.google.com/go/v4 v4.19.0
+	github.com/Ronin11/medsage-proto v0.1.0
+	github.com/lib/pq v1.11.2
 	github.com/nats-io/nats.go v1.49.0
 	github.com/resend/resend-go/v2 v2.28.0
+	google.golang.org/api v0.231.0
 	google.golang.org/protobuf v1.36.11
-	medsage/proto v0.0.0-00010101000000-000000000000
 )
-
-replace medsage/proto => ../proto/gen/go
 
 require (
 	cel.dev/expr v0.23.1 // indirect
@@ -22,7 +23,6 @@ require (
 	cloud.google.com/go/longrunning v0.6.7 // indirect
 	cloud.google.com/go/monitoring v1.24.2 // indirect
 	cloud.google.com/go/storage v1.53.0 // indirect
-	firebase.google.com/go/v4 v4.19.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.27.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.51.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.51.0 // indirect
@@ -42,7 +42,6 @@ require (
 	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect
 	github.com/googleapis/gax-go/v2 v2.14.1 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
-	github.com/lib/pq v1.11.2 // indirect
 	github.com/nats-io/nkeys v0.4.12 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10 // indirect
@@ -64,7 +63,6 @@ require (
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
 	golang.org/x/time v0.11.0 // indirect
-	google.golang.org/api v0.231.0 // indirect
 	google.golang.org/appengine/v2 v2.0.6 // indirect
 	google.golang.org/genproto v0.0.0-20250505200425-f936aa4a68b2 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20250505200425-f936aa4a68b2 // indirect

@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	commandsv1 "medsage/proto/medsage/commands/v1"
+	commandsv1 "github.com/Ronin11/medsage-proto/medsage/commands/v1"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"

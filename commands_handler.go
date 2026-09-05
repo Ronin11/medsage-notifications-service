@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	commandsv1 "medsage/proto/medsage/commands/v1"
+	commandsv1 "github.com/Ronin11/medsage-proto/medsage/commands/v1"
 
 	"medsage/notifications-service/email"
 )

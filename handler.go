@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	eventsv1 "medsage/proto/medsage/events/v1"
+	eventsv1 "github.com/Ronin11/medsage-proto/medsage/events/v1"
 
 	"medsage/notifications-service/email"
 	"medsage/notifications-service/push"

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	commandsv1 "medsage/proto/medsage/commands/v1"
+	commandsv1 "github.com/Ronin11/medsage-proto/medsage/commands/v1"
 )
 
 func TestHandleSendEmailMissingRecipient(t *testing.T) {

@@ -1,0 +1,37 @@
+name: CI
+
+# This module builds standalone. It did not until 2026-09-05: it depended on
+# medsage/proto (and authkit) through `replace ../…`, so it could only be built
+# from inside the monorepo and had no CI at all. Those are published modules
+# now, which is what makes this workflow possible.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # The shared modules are private, so the proxy and checksum database
+      # cannot serve them, and git needs a credential to fetch them.
+      GOPRIVATE: github.com/Ronin11/*
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Authenticate to private modules
+        # MODULES_TOKEN: a fine-grained PAT with read-only Contents access to
+        # medsage-proto and medsage-authkit. One token for both, rather than a
+        # deploy key per repository.
+        env:
+          TOKEN: ${{ secrets.MODULES_TOKEN }}
+        run: |
+          test -n "$TOKEN" || { echo "MODULES_TOKEN secret is not set — see the repo's README"; exit 1; }
+          git config --global url."https://x-access-token:$TOKEN@github.com/".insteadOf "https://github.com/"
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
