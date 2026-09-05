@@ -86,8 +86,9 @@ func main() {
 
 	emailClient := email.NewClient(cfg.ResendAPIKey, cfg.FromAddress)
 
-	// Connect to postgres for push token lookups
+	// Connect to postgres for push token and email recipient lookups
 	var tokenStore *push.TokenStore
+	var recipientStore *email.RecipientStore
 	if cfg.DatabaseURL != "" {
 		db, err := sql.Open("postgres", cfg.DatabaseURL)
 		if err != nil {
@@ -96,10 +97,11 @@ func main() {
 			slog.Warn("Database not reachable, push notifications disabled", "error", err)
 		} else {
 			tokenStore = push.NewTokenStore(db)
-			slog.Info("Push token store connected")
+			recipientStore = email.NewRecipientStore(db)
+			slog.Info("Push token and email recipient stores connected")
 		}
 	} else {
-		slog.Warn("DATABASE_URL not set, push notifications disabled")
+		slog.Warn("DATABASE_URL not set: notifications cannot be addressed to anyone")
 	}
 
 	// Initialize FCM client
@@ -136,7 +138,7 @@ func main() {
 		"medsage.events.alerts",
 		"medsage.events.bug.report",
 	}
-	notifier := NewEventNotifier(emailClient, tokenStore, fcmClient, cfg.AlertTo, cfg.ContactTo)
+	notifier := NewEventNotifier(emailClient, tokenStore, recipientStore, fcmClient, cfg.AlertTo, cfg.ContactTo)
 
 	go func() {
 		for {

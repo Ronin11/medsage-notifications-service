@@ -103,7 +103,7 @@ func TestPatientEventIsDroppedWhenNobodyIsRegistered(t *testing.T) {
 	// No token store (so push reaches nobody) and no ALERT_TO. The event must
 	// be dropped rather than mailed to whoever is configured for ops.
 	m := &recordingMailer{}
-	n := NewEventNotifier(m, nil, nil, "", "ops@medsage.test")
+	n := NewEventNotifier(m, nil, nil, nil, "", "ops@medsage.test")
 
 	if err := n.Handle(t.Context(), medEvent(eventsv1.EventType_EVENT_TYPE_MEDICATION_MISSED)); err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -115,7 +115,7 @@ func TestPatientEventIsDroppedWhenNobodyIsRegistered(t *testing.T) {
 
 func TestPatientEventUsesAlertRecipientNotOps(t *testing.T) {
 	m := &recordingMailer{}
-	n := NewEventNotifier(m, nil, nil, "caretaker@example.test", "ops@medsage.test")
+	n := NewEventNotifier(m, nil, nil, nil, "caretaker@example.test", "ops@medsage.test")
 
 	if err := n.Handle(t.Context(), medEvent(eventsv1.EventType_EVENT_TYPE_MEDICATION_MISSED)); err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -132,7 +132,7 @@ func TestBugReportGoesToOpsNotTheAlertRecipient(t *testing.T) {
 	// Diagnostics are for the vendor; they must not follow the patient alert
 	// path, and must still work when no alert recipient is configured.
 	m := &recordingMailer{}
-	n := NewEventNotifier(m, nil, nil, "", "ops@medsage.test")
+	n := NewEventNotifier(m, nil, nil, nil, "", "ops@medsage.test")
 
 	if err := n.Handle(t.Context(), medEvent(eventsv1.EventType_EVENT_TYPE_BUG_REPORT)); err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -146,7 +146,7 @@ func TestBugReportGoesToOpsNotTheAlertRecipient(t *testing.T) {
 }
 
 func TestEmailRecipientRouting(t *testing.T) {
-	n := NewEventNotifier(nil, nil, nil, "alert@example.test", "ops@example.test")
+	n := NewEventNotifier(nil, nil, nil, nil, "alert@example.test", "ops@example.test")
 	for _, tc := range []struct {
 		evt  eventsv1.EventType
 		want string
@@ -157,8 +157,9 @@ func TestEmailRecipientRouting(t *testing.T) {
 		{eventsv1.EventType_EVENT_TYPE_ALARM_TRIGGERED, "alert@example.test"},
 		{eventsv1.EventType_EVENT_TYPE_BUG_REPORT, "ops@example.test"},
 	} {
-		if got := n.emailRecipient(tc.evt); got != tc.want {
-			t.Errorf("%s routed to %q, want %q", tc.evt, got, tc.want)
+		got := n.emailRecipients(t.Context(), tc.evt, "d1")
+		if len(got) != 1 || got[0] != tc.want {
+			t.Errorf("%s routed to %v, want [%s]", tc.evt, got, tc.want)
 		}
 	}
 }
@@ -166,8 +167,8 @@ func TestEmailRecipientRouting(t *testing.T) {
 func TestSendRefusesAnEmptyRecipient(t *testing.T) {
 	// Belt and braces: even if a future caller loses the routing check, the
 	// send path itself will not address an email to nobody.
-	n := NewEventNotifier(&recordingMailer{}, nil, nil, "", "")
-	if err := n.send(t.Context(), "", "subject", "<p>body</p>"); err == nil {
+	n := NewEventNotifier(&recordingMailer{}, nil, nil, nil, "", "")
+	if err := n.send(t.Context(), nil, "subject", "<p>body</p>"); err == nil {
 		t.Error("expected an error sending with no recipient")
 	}
 }
