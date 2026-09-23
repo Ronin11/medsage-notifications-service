@@ -28,7 +28,6 @@ func NewServer(addr string, emailClient *email.Client, contactTo, allowedOrigins
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /heartbeat", s.handleHeartbeat)
-	mux.HandleFunc("POST /api/notifications/email", s.cors(s.handleSendEmail))
 	mux.HandleFunc("POST /api/notifications/contact", s.cors(s.handleContact))
 	mux.HandleFunc("OPTIONS /api/notifications/", s.cors(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -117,37 +116,6 @@ func (s *Server) handleContact(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		http.Error(w, `{"error":"failed to send message"}`, http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(resp)
-}
-
-func (s *Server) handleSendEmail(w http.ResponseWriter, r *http.Request) {
-	var req email.SendRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
-		return
-	}
-
-	if len(req.To) == 0 {
-		http.Error(w, `{"error":"'to' is required"}`, http.StatusBadRequest)
-		return
-	}
-	if req.Subject == "" {
-		http.Error(w, `{"error":"'subject' is required"}`, http.StatusBadRequest)
-		return
-	}
-	if req.HTML == "" && req.Text == "" {
-		http.Error(w, `{"error":"'html' or 'text' is required"}`, http.StatusBadRequest)
-		return
-	}
-
-	resp, err := s.emailClient.Send(r.Context(), req)
-	if err != nil {
-		http.Error(w, `{"error":"failed to send email"}`, http.StatusInternalServerError)
 		return
 	}
 
