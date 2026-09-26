@@ -172,3 +172,41 @@ func TestSendRefusesAnEmptyRecipient(t *testing.T) {
 		t.Error("expected an error sending with no recipient")
 	}
 }
+
+// A dispenser publishes MEDICATION_DISPENSED for every release. The ones that
+// opened are covered by the MEDICATION_CONFIRMED that follows; only a failed
+// release may reach a caretaker, or every dose becomes two notifications.
+func TestOnlyAFailedReleaseNotifies(t *testing.T) {
+	dispensed := func(result string) *eventsv1.DeviceEvent {
+		return &eventsv1.DeviceEvent{
+			EventId: "e1", DeviceId: "d1",
+			EventType: eventsv1.EventType_EVENT_TYPE_MEDICATION_DISPENSED,
+			Payload: &eventsv1.DeviceEvent_MedicationDispensed{MedicationDispensed: &eventsv1.MedicationDispensed{
+				Hour: 8, Minute: 30, Compartment: 5, Result: result,
+			}},
+		}
+	}
+	for _, result := range []string{"opened", ""} {
+		m := &recordingMailer{}
+		n := NewEventNotifier(m, nil, nil, nil, "caretaker@example.test", "ops@medsage.test")
+		if err := n.Handle(t.Context(), dispensed(result)); err != nil {
+			t.Fatalf("Handle(%q): %v", result, err)
+		}
+		if len(m.sent) != 0 {
+			t.Errorf("result %q notified: %+v", result, m.sent)
+		}
+	}
+	for _, result := range []string{"jammed", "timeout"} {
+		m := &recordingMailer{}
+		n := NewEventNotifier(m, nil, nil, nil, "caretaker@example.test", "ops@medsage.test")
+		if err := n.Handle(t.Context(), dispensed(result)); err != nil {
+			t.Fatalf("Handle(%q): %v", result, err)
+		}
+		if len(m.sent) != 1 {
+			t.Fatalf("result %q: expected one email, got %d", result, len(m.sent))
+		}
+		if !strings.Contains(m.sent[0].HTML, "compartment 5") || !strings.Contains(m.sent[0].HTML, result) {
+			t.Errorf("result %q: email does not say what failed: %s", result, m.sent[0].HTML)
+		}
+	}
+}

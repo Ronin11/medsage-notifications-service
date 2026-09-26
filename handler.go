@@ -104,8 +104,17 @@ func (n *EventNotifier) Handle(ctx context.Context, evt *eventsv1.DeviceEvent) e
 
 	switch evt.EventType {
 	case eventsv1.EventType_EVENT_TYPE_MEDICATION_DISPENSED:
-		title = "Medication Dispensed"
-		body = fmt.Sprintf("Device %s dispensed medication at %s", shortID(evt.DeviceId), formatTimestamp(evt.TimestampUnix))
+		// Every dose a dispenser releases produces one of these, and the
+		// MEDICATION_CONFIRMED that follows already says the dose was taken.
+		// Only a release that failed is news: the pills are still in the
+		// compartment and the dose is still due.
+		if !releaseFailed(evt.GetMedicationDispensed()) {
+			return nil
+		}
+		p := evt.GetMedicationDispensed()
+		title = "Dispenser problem"
+		body = fmt.Sprintf("Device %s could not open compartment %d (%s). The dose is still due.",
+			shortID(evt.DeviceId), p.GetCompartment(), p.GetResult())
 		emailSender = n.sendMedicationDispensed
 	case eventsv1.EventType_EVENT_TYPE_MEDICATION_MISSED:
 		title = "Medication Missed"
@@ -207,13 +216,29 @@ func (n *EventNotifier) sendPush(ctx context.Context, deviceID, title, body stri
 	return delivered
 }
 
+// releaseFailed is true for a release that did not open. An empty result is
+// a pre-v0.2.0 event with no fields at all, which never described a failure.
+func releaseFailed(p *eventsv1.MedicationDispensed) bool {
+	r := p.GetResult()
+	return r != "" && r != "opened"
+}
+
 func (n *EventNotifier) sendMedicationDispensed(ctx context.Context, to []string, evt *eventsv1.DeviceEvent) error {
-	subject := fmt.Sprintf("[Medsage] Medication Dispensed — Device %s", shortID(evt.DeviceId))
-	body := fmt.Sprintf(`<h2>Medication Dispensed</h2>
+	p := evt.GetMedicationDispensed()
+	subject := fmt.Sprintf("[Medsage] Dispenser could not release a dose — Device %s", shortID(evt.DeviceId))
+	body := fmt.Sprintf(`<h2>The dispenser could not release a dose</h2>
 <p><strong>Device:</strong> %s</p>
-<p><strong>Time:</strong> %s</p>`,
+<p><strong>Dose:</strong> %02d:%02d, compartment %d</p>
+<p><strong>What happened:</strong> %s</p>
+<p><strong>Time:</strong> %s</p>
+<p>The dose has not been recorded as taken and is still due. The patient can
+try again on the dispenser; if it keeps failing, the pills can be taken from
+compartment %d by hand and the dose confirmed.</p>`,
 		html.EscapeString(evt.DeviceId),
+		p.GetHour(), p.GetMinute(), p.GetCompartment(),
+		html.EscapeString(p.GetResult()),
 		formatTimestamp(evt.TimestampUnix),
+		p.GetCompartment(),
 	)
 
 	return n.send(ctx, to, subject, body)
