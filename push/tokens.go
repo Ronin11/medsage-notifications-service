@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
+
+	"github.com/lib/pq"
 )
 
 // TokenStore queries push tokens from the database.
@@ -24,47 +27,58 @@ func NewTokenStore(db *sql.DB) *TokenStore {
 	return &TokenStore{db: db}
 }
 
-// tokensForDevice returns push tokens on one platform for the users who own or
-// caretake a device. An empty result is a legitimate answer — a device nobody
-// is responsible for yet — and is returned as an empty slice, not an error.
-func (s *TokenStore) tokensForDevice(ctx context.Context, platform, deviceID string) ([]string, error) {
-	const query = `
-		SELECT DISTINCT pt.token
-		FROM push_tokens pt
-		WHERE pt.platform = $1
-		  AND (
-		    pt.user_id IN (SELECT user_id FROM devices WHERE id = $2::uuid)
-		    OR pt.user_id IN (SELECT user_id FROM device_caretakers WHERE device_id = $2::uuid)
-		  )`
+// Token is one registered device of one user. UserID travels with it so the
+// caller can apply that person's notification preferences.
+type Token struct {
+	UserID   string
+	Token    string
+	Platform string // "expo" | "fcm"
+}
 
-	rows, err := s.db.QueryContext(ctx, query, platform, deviceID)
+// ForDevice returns the push tokens of the users who own or caretake a device.
+// An empty result is a legitimate answer — a device nobody is responsible for
+// yet — and is returned as an empty slice, not an error.
+func (s *TokenStore) ForDevice(ctx context.Context, deviceID string) ([]Token, error) {
+	const query = `
+		SELECT DISTINCT pt.user_id::text, pt.token, pt.platform
+		FROM push_tokens pt
+		WHERE pt.user_id IN (SELECT user_id FROM devices WHERE id = $1::uuid)
+		   OR pt.user_id IN (SELECT user_id FROM device_caretakers WHERE device_id = $1::uuid)`
+
+	rows, err := s.db.QueryContext(ctx, query, deviceID)
 	if err != nil {
 		// Report the failure. Notifying the wrong people is worse than not
 		// notifying anyone, so there is no fallback to widen the audience.
-		return nil, fmt.Errorf("query %s push tokens for device %s: %w", platform, deviceID, err)
+		return nil, fmt.Errorf("query push tokens for device %s: %w", deviceID, err)
 	}
 	defer rows.Close()
 
-	var tokens []string
+	var tokens []Token
 	for rows.Next() {
-		var token string
-		if err := rows.Scan(&token); err != nil {
-			return nil, fmt.Errorf("scan %s push token: %w", platform, err)
+		var t Token
+		if err := rows.Scan(&t.UserID, &t.Token, &t.Platform); err != nil {
+			return nil, fmt.Errorf("scan push token: %w", err)
 		}
-		tokens = append(tokens, token)
+		tokens = append(tokens, t)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate %s push tokens: %w", platform, err)
+		return nil, fmt.Errorf("iterate push tokens: %w", err)
 	}
 	return tokens, nil
 }
 
-// GetTokensForDevice returns Expo push tokens for users who own or caretake a device.
-func (s *TokenStore) GetTokensForDevice(ctx context.Context, deviceID string) ([]string, error) {
-	return s.tokensForDevice(ctx, "expo", deviceID)
-}
-
-// GetFCMTokensForDevice returns FCM tokens for users who own or caretake a device.
-func (s *TokenStore) GetFCMTokensForDevice(ctx context.Context, deviceID string) ([]string, error) {
-	return s.tokensForDevice(ctx, "fcm", deviceID)
+// Forget deletes tokens the push provider says are no longer registered.
+// Failure is logged, not returned: pruning is housekeeping, and the alert
+// that found them has already been sent or fallen back to email.
+func (s *TokenStore) Forget(ctx context.Context, tokens []string) {
+	if len(tokens) == 0 {
+		return
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM push_tokens WHERE token = ANY($1)`, pq.Array(tokens))
+	if err != nil {
+		slog.Warn("Could not remove unregistered push tokens", "error", err, "count", len(tokens))
+		return
+	}
+	n, _ := res.RowsAffected()
+	slog.Info("Removed unregistered push tokens", "count", n)
 }

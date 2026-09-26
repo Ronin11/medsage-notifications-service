@@ -13,11 +13,16 @@ const expoPushURL = "https://exp.host/--/api/v2/push/send"
 
 // Message represents an Expo push notification.
 type Message struct {
-	To    string `json:"to"`
-	Title string `json:"title"`
-	Body  string `json:"body"`
-	Sound string `json:"sound,omitempty"`
-	Data  map[string]string `json:"data,omitempty"`
+	To       string            `json:"to"`
+	Title    string            `json:"title"`
+	Body     string            `json:"body"`
+	Sound    string            `json:"sound,omitempty"`
+	Data     map[string]string `json:"data,omitempty"`
+	Priority string            `json:"priority,omitempty"`
+	// ChannelID is the Android notification channel. The app creates
+	// AndroidChannel; a message naming a channel that does not exist yet
+	// falls back to the default one rather than being dropped.
+	ChannelID string `json:"channelId,omitempty"`
 }
 
 // Response from the Expo push API.
@@ -62,11 +67,17 @@ func Send(ctx context.Context, messages []Message) error {
 		return fmt.Errorf("decode push response: %w", err)
 	}
 
+	ok := 0
 	for _, d := range result.Data {
 		if d.Status != "ok" {
 			slog.Warn("Push notification failed", "status", d.Status, "message", d.Message)
+			continue
 		}
+		ok++
 	}
-
+	// Every ticket rejected is not a delivery; the caller falls back to email.
+	if ok == 0 {
+		return fmt.Errorf("expo: all %d messages rejected", len(messages))
+	}
 	return nil
 }

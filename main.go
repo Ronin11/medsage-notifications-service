@@ -7,8 +7,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
+	// The runtime image is alpine without tzdata; device zones must resolve.
+	_ "time/tzdata"
 
 	_ "github.com/lib/pq"
 
@@ -16,6 +19,7 @@ import (
 	"medsage/notifications-service/email"
 	natsbus "medsage/notifications-service/nats"
 	"medsage/notifications-service/push"
+	"medsage/notifications-service/store"
 )
 
 type Config struct {
@@ -28,6 +32,13 @@ type Config struct {
 	NATSURL             string
 	DatabaseURL         string
 	FirebaseCredentials string
+	// DefaultTimezone is the zone for a device that has not reported one.
+	DefaultTimezone string
+	// MissCheckInterval is how often the missed-dose and offline check runs.
+	MissCheckInterval time.Duration
+	// OfflineAlertAfter is how long a dispenser with doses scheduled must be
+	// offline before its care circle is told.
+	OfflineAlertAfter time.Duration
 }
 
 func loadConfig() Config {
@@ -49,7 +60,30 @@ func loadConfig() Config {
 		NATSURL:             getEnv("NATS_URL", "nats://nats:4222"),
 		DatabaseURL:         getEnv("DATABASE_URL", ""),
 		FirebaseCredentials: getEnv("GOOGLE_APPLICATION_CREDENTIALS", ""),
+		DefaultTimezone:     getEnv("DEFAULT_TIMEZONE", "America/Denver"),
+		MissCheckInterval:   getDuration("MISS_CHECK_INTERVAL", 60*time.Second),
+		OfflineAlertAfter:   time.Duration(getInt("OFFLINE_ALERT_MIN", 30)) * time.Minute,
 	}
+}
+
+func getDuration(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+		slog.Warn("Ignoring invalid duration", "key", key, "value", v)
+	}
+	return def
+}
+
+func getInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+		slog.Warn("Ignoring invalid integer", "key", key, "value", v)
+	}
+	return def
 }
 
 func getEnv(key, defaultValue string) string {
@@ -60,8 +94,14 @@ func getEnv(key, defaultValue string) string {
 }
 
 func main() {
+	// LOG_LEVEL=debug shows the missed-dose check's per-tick findings,
+	// including the ones the dedupe ledger turns away.
+	level := slog.LevelInfo
+	if err := level.UnmarshalText([]byte(getEnv("LOG_LEVEL", "info"))); err != nil {
+		level = slog.LevelInfo
+	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: level,
 	}))
 	slog.SetDefault(logger)
 
@@ -86,19 +126,27 @@ func main() {
 
 	emailClient := email.NewClient(cfg.ResendAPIKey, cfg.FromAddress)
 
-	// Connect to postgres for push token and email recipient lookups
+	defaultZone, err := time.LoadLocation(cfg.DefaultTimezone)
+	if err != nil {
+		slog.Error("DEFAULT_TIMEZONE is not a known IANA zone", "value", cfg.DefaultTimezone, "error", err)
+		os.Exit(1)
+	}
+
+	// Connect to postgres: recipients, schedules, events and the sent ledger.
+	// Declared as the interface so "no database" is a nil interface, not a
+	// typed nil pointer the notifier would try to use.
+	var db Store
 	var tokenStore *push.TokenStore
-	var recipientStore *email.RecipientStore
 	if cfg.DatabaseURL != "" {
-		db, err := sql.Open("postgres", cfg.DatabaseURL)
+		conn, err := sql.Open("postgres", cfg.DatabaseURL)
 		if err != nil {
 			slog.Error("Failed to connect to database", "error", err)
-		} else if err := db.Ping(); err != nil {
-			slog.Warn("Database not reachable, push notifications disabled", "error", err)
+		} else if err := conn.Ping(); err != nil {
+			slog.Warn("Database not reachable, notifications cannot be addressed", "error", err)
 		} else {
-			tokenStore = push.NewTokenStore(db)
-			recipientStore = email.NewRecipientStore(db)
-			slog.Info("Push token and email recipient stores connected")
+			db = store.NewPostgres(conn)
+			tokenStore = push.NewTokenStore(conn)
+			slog.Info("Database connected")
 		}
 	} else {
 		slog.Warn("DATABASE_URL not set: notifications cannot be addressed to anyone")
@@ -138,7 +186,18 @@ func main() {
 		"medsage.events.alerts",
 		"medsage.events.bug.report",
 	}
-	notifier := NewEventNotifier(emailClient, tokenStore, recipientStore, fcmClient, cfg.AlertTo, cfg.ContactTo)
+	dispatcher := push.NewDispatcher(fcmClient)
+	if tokenStore != nil {
+		dispatcher.Forget = tokenStore.Forget
+	}
+	notifier := NewEventNotifier(emailClient, db, dispatcher, cfg.AlertTo, cfg.ContactTo, defaultZone)
+
+	// The server-side missed-dose and offline check. Stops with ctx.
+	checkerDone := make(chan struct{})
+	go func() {
+		defer close(checkerDone)
+		NewChecker(notifier, cfg.MissCheckInterval, cfg.OfflineAlertAfter).Run(ctx)
+	}()
 
 	go func() {
 		for {
@@ -209,6 +268,11 @@ func main() {
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		slog.Error("Shutdown error", "error", err)
+	}
+	select {
+	case <-checkerDone:
+	case <-shutdownCtx.Done():
+		slog.Warn("Missed-dose check did not stop in time")
 	}
 
 	slog.Info("Notifications service stopped")
