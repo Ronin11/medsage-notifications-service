@@ -70,7 +70,7 @@ notices first.
 `RESEND_API_KEY` (required), `CONTACT_TO` (required), `ALERT_TO` (optional),
 `FROM_ADDRESS`, `DATABASE_URL`, `NATS_URL`, `GOOGLE_APPLICATION_CREDENTIALS`
 (FCM), `ALLOWED_ORIGINS`, `PORT`, `DEFAULT_TIMEZONE` (default
-`America/Denver`), `MISS_CHECK_INTERVAL` (Go duration, default `60s`),
+`America/Denver`), `MISS_CHECK_INTERVAL` (Go duration, default `15s`),
 `OFFLINE_ALERT_MIN` (default 30), `LOG_LEVEL` (`debug` shows each tick's
 findings, including the ones the dedupe ledger turns away).
 

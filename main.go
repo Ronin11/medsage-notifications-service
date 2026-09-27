@@ -61,8 +61,11 @@ func loadConfig() Config {
 		DatabaseURL:         getEnv("DATABASE_URL", ""),
 		FirebaseCredentials: getEnv("GOOGLE_APPLICATION_CREDENTIALS", ""),
 		DefaultTimezone:     getEnv("DEFAULT_TIMEZONE", "America/Denver"),
-		MissCheckInterval:   getDuration("MISS_CHECK_INTERVAL", 60*time.Second),
-		OfflineAlertAfter:   time.Duration(getInt("OFFLINE_ALERT_MIN", 30)) * time.Minute,
+		// 15 s: a demo dispenser counts a miss after 1 minute, and an alert that
+		// trails the dispenser by most of a minute reads as broken. One query
+		// per tick over devices with active schedules — cheap at this scale.
+		MissCheckInterval: getDuration("MISS_CHECK_INTERVAL", 15*time.Second),
+		OfflineAlertAfter: time.Duration(getInt("OFFLINE_ALERT_MIN", 30)) * time.Minute,
 	}
 }
 
